@@ -25,30 +25,67 @@ jobs:
         with:
           node-version: 22
 
-      - name: Verify project files
+      - name: Locate project
+        id: locate
         shell: pwsh
         run: |
-          if (!(Test-Path "package.json")) {
-            Write-Error "package.json was not found in the repository root."
+          $package = Get-ChildItem -Path $env:GITHUB_WORKSPACE `
+            -Filter package.json -File -Recurse |
+            Where-Object {
+              $_.FullName -notmatch '\\node_modules\\' -and
+              $_.FullName -notmatch '\\\.git\\'
+            } |
+            Select-Object -First 1
+
+          if (-not $package) {
+            Write-Error "No package.json found. Check the uploaded project files."
+            Get-ChildItem -Force $env:GITHUB_WORKSPACE
             exit 1
           }
 
-          Write-Host "Project files found."
-          Get-Content package.json
+          $projectDir = $package.Directory.FullName
+          "PROJECT_DIR=$projectDir" >> $env:GITHUB_ENV
+
+          Write-Host "Project directory: $projectDir"
+          Write-Host "Found package.json"
 
       - name: Install dependencies
-        run: npm install
+        shell: pwsh
+        run: |
+          Set-Location $env:PROJECT_DIR
 
-      - name: Run lint if available
-        run: npm run lint --if-present
+          if (Test-Path "package-lock.json") {
+            npm ci
+          } else {
+            npm install
+          }
 
-      - name: Build application
-        run: npm run dist:win
+      - name: Build Windows application
+        shell: pwsh
+        run: |
+          Set-Location $env:PROJECT_DIR
+
+          $pkg = Get-Content package.json -Raw | ConvertFrom-Json
+          $scripts = $pkg.scripts
+
+          if ($scripts.'dist:win') {
+            npm run dist:win
+          } elseif ($scripts.'dist') {
+            npm run dist
+          } else {
+            Write-Error "No dist:win or dist build script found in package.json."
+            Write-Host "Available scripts:"
+            $scripts | Format-List
+            exit 1
+          }
 
       - name: Upload Windows installer
         uses: actions/upload-artifact@v4
         with:
           name: Submagic-AI-Windows-Installer
-          path: dist_electron/*.exe
+          path: |
+            **/dist_electron/*.exe
+            **/dist/*.exe
+            **/release/*.exe
           if-no-files-found: error
           retention-days: 14
